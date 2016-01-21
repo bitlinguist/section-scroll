@@ -5,20 +5,31 @@ disableScroll = (e) ->
 snapSectionsProto =
   currentList: undefined
   currentItem: undefined
+  currentPlaneId: undefined
   $planes: $('.js-snap-plane')
+  $main: $('.js-main-wrap')
+  $body: $('body')
   currentScroll: 0
   animating: false
   lastScroll: 0
-  scrollBarrier: 10
+  scrollBarrier: 40
   inSection: false
   entDetected: false
+  scrollBuildup: 0
+  animateBarrier: 400
+  scrollRatio: 1
+  dummies: undefined
+  overshot: 0
+  scrollDirr: false
+  window: {}
 
 SnapSections = Object.create snapSectionsProto
 SnapSections.checkCurrPlane = ($plane, count = 0) ->
   _this = @
   sY = window.scrollY
   $sections = $plane.children()
-  @.currentScroll = sY
+
+  _this.currentPlaneId = count
   count++
 
   if (sY >= $sections.first().offset().top && sY <= $sections.last().offset().top + $sections.last().height() - 1)
@@ -43,7 +54,22 @@ SnapSections.determineSection = ($sections) ->
 
   return elm
 
-SnapSections.windowScroll = (cb) ->
+SnapSections.calcScrDirr = () ->
+  if @.currentItem.length > 0 && !@.animating && @.lastScroll - @.scrollBarrier > window.scrollY
+    @.scrollDirr = 'up'
+  else if @.currentItem.length > 0  && !@.animating && @.lastScroll + @.scrollBarrier < window.scrollY
+    @.scrollDirr = 'down'
+  else
+    @.scrollDirr = false
+  return
+
+SnapSections.calcOvershot = () ->
+  if @.scrollDirr == 'down'
+    @.overshot = window.scrollY - @.$planes[@.currentPlaneId].orgnPosTop
+  else if  @.scrollDirr == 'up'
+    @.overshot = window.scrollY - (@.$planes[@.currentPlaneId].orgnPosTop + @.currentList.height())
+
+SnapSections.windowScroll = (evt, cb) ->
   if !@.animating
     _this = @
     if typeof @.currentList == 'undefined'
@@ -51,71 +77,127 @@ SnapSections.windowScroll = (cb) ->
     if typeof @.currentList != 'undefined' && !@.inSection
       @.inSection = true
       @.currentItem = @.determineSection @currentList.children()
+      @.calcScrDirr.call _this
+      @.calcOvershot.call _this
     else if @.inSection
+      @.calcScrDirr.call _this
       cb.call _this
   else
     return false
 
-SnapSections.disableScroll = () ->
-  $('body').css('position', 'fixed')
-  $('body').css('overflow-y', 'scroll')
-
 SnapSections.enableScroll = (scroll) ->
-  $('body').css('position', 'static')
-  $('body').css('overflow-y', 'auto')
-  window.scrollTo(0, scroll)
+  _this = @
+  setTimeout(->
+    _this.animating = false
+  , 125)
+
+SnapSections.entDetection = () ->
+  if @.entDetected
+    if @.scrollDirr == 'down'
+      @.window.scroll = @.$planes[@.currentPlaneId].orgnPosTop
+    else
+      @.window.scroll = @.$planes[@.currentPlaneId].orgnPosTop + $(@.$planes[@.currentPlaneId]).height()
+
+SnapSections.animateBody = (scroll) ->
+  if @.scrollDirr == 'up'
+    $('body').scrollTop(scroll + @.currentItem.height())
+  else if @.scrollDirr == 'down'
+    $('body').scrollTop(scroll - @.currentItem.height())
+  $('body').animate {scrollTop: scroll}, {duration: 400}
+  return
+
+SnapSections.planeExit = () ->
+  @.currentList.css {
+    'top': @.$planes[@.currentPlaneId].orgnPosTop
+    'position': 'absolute'
+  }
+  @.currentList = undefined
+  @.currentItem = undefined
+  @.inSection = false
+  @.currentScroll = 0
 
 SnapSections.handleScroll = () ->
-  if @.currentItem.length > 0  && !@.animating && @.lastScroll + @.scrollBarrier < window.scrollY
-    _this = @
+  if @.scrollDirr == 'down'
     @.animating = true
-    scroll = @.currentItem.offset().top + @.currentItem.height()
-    $('body').css('top', -@.currentItem.offset().top)
-    @.disableScroll()
-    $('body').animate {top: -scroll}, { duration: 400, complete: () ->
-      _this.animating = false
+    @.entDetection()
+    currItemHeight = @.currentItem.height()
+    scroll = currItemHeight + @.window.scroll
+    contentScroll = currItemHeight + @.currentScroll
+    @.window.scroll = scroll
+    _this = @
+    @.currentList.css
+      'top': -@.currentScroll - @.overshot
+      'position': 'fixed'
+    @.animateBody scroll
+    @.currentList.animate {top: -contentScroll}, { duration: 400, complete: () ->
+      _this.overshot = 0
       _this.entDetected = false
       _this.lastScroll = scroll
-      _this.currentScroll = scroll
+      _this.currentScroll = contentScroll
       _this.currentItem = _this.currentItem.next().first()
       _this.enableScroll(scroll)
       if _this.currentItem.length == 0
-        _this.currentList = undefined
-        _this.currentItem = undefined
-        _this.inSection = false
+        _this.planeExit.call _this
     }
-  else if @.currentItem.length > 0 && !@.animating && @.lastScroll - @.scrollBarrier > window.scrollY
-    _this = @
+  else if @.scrollDirr == 'up'
     @.animating = true
+    @.entDetection()
     if @.entDetected
-      scroll = @.currentItem.offset().top
-      scrollFrom = @.currentItem.offset().top + @.currentItem.height()
+      scroll = @.currentScroll + @.currentList.height() - @.currentItem.height()
+      bodyScroll = @.currentList.height() + @.$planes[@.currentPlaneId].orgnPosTop - @.currentItem.height()
+      scrollFrom = -@.currentList.height()
     else
-      scroll = @.currentItem.offset().top - @.currentItem.height()
-      scrollFrom = @.currentItem.offset().top
+      scroll = @.currentScroll - @.currentItem.height()
+      bodyScroll = @.lastScroll - @.currentItem.height()
+      scrollFrom = -@.currentScroll
 
-    $('body').css('top', -scrollFrom)
-    @.disableScroll()
-    $('body').animate {top: -scroll}, { duration: 400, complete: () ->
-      _this.animating = false
-      _this.lastScroll = scroll
+    @.currentList.css
+      'top': scrollFrom + @.overshot
+      'position': 'fixed'
+
+    _this = @
+    @.window.scroll = bodyScroll
+    @.animateBody bodyScroll
+    @.currentList.animate {top: -scroll}, { duration: 400, complete: () ->
+      _this.lastScroll = bodyScroll
       _this.currentScroll = scroll
 
       if !_this.entDetected
         _this.currentItem = _this.currentItem.prev()
-
+      _this.overshot = 0
       _this.entDetected = false
       _this.enableScroll(scroll)
       if _this.currentItem.length == 0
-        _this.currentList = undefined
-        _this.currentItem = undefined
-        _this.inSection = false
+        _this.planeExit.call _this
     }
+
+SnapSections.setupDummies = () ->
+  _this = @
+  _this.dummies = []
+
+  @.$planes.each (i, elm) ->
+    $elm = $(elm)
+    $planeMimic = $(document.createElement('DIV')).addClass "js-snap-scrolling-#{i}"
+    $planeMimic.height($elm.height() * _this.scrollRatio)
+    _this.dummies.push $planeMimic
+    $planeMimic.insertAfter($elm)
+    $elm.css
+      'width': '100%'
+      'height': $elm.height()
+      'position': 'absolute'
+      'top': $elm.orgnPosTop
+      'left': 0
 
 
 SnapSections.init = () ->
   _this = @
-  $(window).scroll @.windowScroll.bind(_this, @.handleScroll)
+
+  for i in [0...@.$planes.length] by 1
+    @.$planes[i].orgnPosTop = $(@.$planes[i]).position().top
+
+  @.setupDummies()
+  $(window).scroll (evt) ->
+    _this.windowScroll.call(_this, evt, _this.handleScroll)
 
 snapSections = Object.create SnapSections
 
